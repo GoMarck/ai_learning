@@ -1,0 +1,77 @@
+# 用 AISBench 验证 xLLM 的后端前缀缓存
+
+仓库附带一份 Qwen3-8B 数据集，包含 100 条预热请求和 100 条正式请求。每条正式请求的正文长 20,480 个 token，其中 10,240 个 token 与对应的预热请求共享。按每块 128 个 token 计算，目标是**每条正式请求从后端复用 80 块**。聊天模板会让实际输入略长，按服务端 prompt token 数计算的复用率约为 50%。
+
+| 阶段 | 文件 | 请求数 | 每条请求的正文 token 数 | 请求输出 token 数 |
+| --- | --- | ---: | ---: | ---: |
+| 预热 | warm.jsonl | 100 | 10,272 | 1 |
+| 正式测试 | formal.jsonl | 100 | 20,480 | 1,024 |
+
+## 准备环境和数据
+
+使用已能执行原版 `aisbench_test.py` 的环境。在其 `config.py` 中，将 `MODEL_PATH` 设为测试机上的 Qwen3-8B 模型目录，`MODEL_NAME` 设为实际服务名，并配置服务地址。生成数据还需要安装有 Qwen3 tokenizer 支持的 Transformers。[AISBench 驱动仓库](https://github.com/rayn-zzz/aisbench_auto_tools_prefix)
+
+从本仓库的 `aisbench` 目录执行以下命令。脚本按 TP8、DP1、并发 4 运行，xLLM 及后端服务由你独立启动。
+
+```bash
+TOOLS="$PWD"
+cd /path/to/aisbench_auto_tools_prefix
+RUN="$PWD/runs/qwen3_8b_pairs100"
+mkdir -p "$RUN"
+cp "$TOOLS/datasets/qwen3_8b_pairs100/"{inputs.json,warm.jsonl,formal.jsonl} "$RUN/"
+```
+
+如需自行生成，两步复制命令（`mkdir`、`cp`）可换成下面的命令。生成器会创建新目录。三组实验使用同一个 `RUN`，保留相同的请求和顺序。已附的数据集可跨机器使用，运行时会比对 tokenizer 文件摘要。
+
+```bash
+RUN="$PWD/runs/qwen3_8b_pairs100_new"
+python3 "$TOOLS/xllm_run.py" generate "$RUN" \
+  --model-path /data/models/Qwen3-8B --requests 100 --input-tokens 20480
+```
+
+## DataSystem 或 Mooncake
+
+选择 `BACKEND=yuanrong`（DataSystem）或 `BACKEND=mooncake`。用本次实验独占的空缓存或新模型命名空间启动 xLLM，打开对应的 backend store，使用 `block_size=128`、`prefetch_batch_size=16`，保留各 rank 的详细日志（`--v=1`）。warm 和 formal 的 xLLM 日志分别写入空目录。
+
+```bash
+BACKEND=yuanrong
+python3 "$TOOLS/xllm_run.py" run "$BACKEND" "$RUN" --phase warm
+```
+
+在可读取 xLLM 日志的容器确认预热写入完成。若容器独立，在该容器中把 `TOOLS` 设为脚本目录，并设置相同的 `BACKEND`。每个 rank 应成功写入 8,000 个块。
+
+```bash
+python3 "$TOOLS/xllm_run.py" wait-warm "$BACKEND" \
+  --log-dir /path/to/warm/log --requests 100 --input-tokens 20480
+```
+
+重启 xLLM 以清空进程内 HBM/Host 前缀缓存。保持相同的模型、model_id、TP 拓扑和后端地址，并保持后端服务与已写入的数据可用。等模型服务就绪后，在 AISBench 容器执行第二次测试。
+
+```bash
+python3 "$TOOLS/xllm_run.py" run "$BACKEND" "$RUN" --phase formal
+```
+
+## 无后端对照
+
+用相同的模型和 TP8 配置新启动 xLLM，设置 `--enable_kvcache_store=false`，直接跑同一份 formal。不同请求之间没有共享的完整首块，预期 100 条均为零复用。
+
+```bash
+python3 "$TOOLS/xllm_run.py" run none "$RUN" --phase formal
+```
+
+## 验收和时延统计
+
+在日志容器执行，`LOG` 直接指向本轮 formal 的 `node_0.log` 所在目录。有后端时，需要 `node_0.log` 至 `node_7.log`，以及含请求 ID 的 `plan_ready`、`worker_get_end`、`completion_available` 打点和请求完成日志。缺少打点的运行无法用此脚本逐条确认后端命中。
+
+```bash
+BACKEND=yuanrong  # 或 mooncake、none
+LOG=/path/to/formal/log
+python3 "$TOOLS/xllm_run.py" verify "$BACKEND" \
+  --log-dir "$LOG" --requests 100 --input-tokens 20480
+python3 "$TOOLS/kv20_metrics.py" stats --backend "$BACKEND" --phase formal \
+  --log-dir "$LOG" --requests 100 --input-tokens 20480
+```
+
+- `verify` 逐请求核对已复用 token 数和各 rank 的 GET 块数。有后端时，预期每条复用 10,240 个 token、每个 rank 各读回 80 块，最终打印 `100/100 individual checks passed`。
+- `stats` 按命中场景统计 TTFT、TPOT 和有打点的 load_kvc/store_kvc 批调用时延，给出平均值、P50 和 P99，单位为毫秒。以 `--log-dir` 运行时，逐请求验收表保存在当前目录的 `<backend>/per_request.csv`，统计表在 `<backend>/formal/`。
+- AISBench 原始输出同步打印，副本位于 `$RUN/<backend>/<phase>/driver.log` 和 `aisbench.log`。如果压测容器看不到 rank 日志，仍可在日志容器中单独执行上述验收。

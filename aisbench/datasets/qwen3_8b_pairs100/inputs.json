@@ -1,0 +1,15 @@
+{
+  "model": null,
+  "model_path": "/private/tmp/kv20-qwen3tok",
+  "tokenizer_files": {
+    "tokenizer.json": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+    "tokenizer_config.json": "d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101"
+  },
+  "seed": "232eba888b958ecf3880bc03",
+  "requests": 100,
+  "input_tokens": 20480,
+  "sha256": {
+    "warm.jsonl": "894e48239697e88aabae661dda44b572affdfe3514db56ef598a052b0f73bbe5",
+    "formal.jsonl": "a0c28fb1516bdc3f9f0e6f4136c05728739f601b1dbda7d3cd8e24551c3bb534"
+  }
+}
