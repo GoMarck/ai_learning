@@ -69,7 +69,13 @@ python3 "$TOOLS/stat_xllm_cache_sources.py" /path/to/formal/log --requests 100
 
 无后端时只需 `node_0.log`。输出的“本地实际复用 token”按所有请求的 `sum(num_prefix_cache_tokens) / sum(prompt_tokens)` 计算。“其中有前缀复用”给出至少命中一个块的请求数。
 
-启用后端时提供 TP8 的 `node_0.log` 至 `node_7.log`。脚本汇总后端 GET 的分片块命中率，以及单次批调用的 load_kvc、store_kvc 平均值、P50 和 P99。仅凭这些汇总日志，脚本给出的后端实际复用 token 数是上限。逐请求确认 80 块是否来自后端，请使用下面的 `verify` 命令。
+`stat_xllm_cache_sources.py` 从启动日志的 `tp_size` 自动识别单个 DP 组的 TP 大小。启用后端时，日志目录须覆盖该组的每个 worker。例如 TP4 通常放入 `node_0.log` 到 `node_3.log`，脚本按记录中的 rank 检查完整性。每个请求的 prompt 和复用 token 只在主日志统计一次。
+
+输出分别列出 HBM、本地 Host DDR 新增贡献、从后端读回并实际复用的 token 数及其占总输入的比例。HBM 优先；Host 比 HBM 多覆盖的部分才可能贡献额外复用。对于没有请求 ID 的 `[HostCache][PrefixMatch]`，只在探测次数和前缀长度分布与完成请求相符时，按每请求一次探测估算 HBM 贡献。请单独保留本轮 formal 的启动、探测及完成日志。
+
+建议以 `--v=1` 保留层级匹配和批调用。运行版本若提供 KVTrace，可用 `--vmodule=hierarchy_block_manager_pool=2` 保留按 request 关联的 `plan_ready` 和 `completion_available`。它们记录预取前的本地 Host 前缀和后端连续命中块数，可帮助区分本地 DDR 与后端回填。日志不足时输出上下界，区间不可相加。后端 GET 的分片块命中率及 load_kvc/store_kvc 的平均值、P50 和 P99 按实际记录的调用另行统计。
+
+下面的 `xllm_run.py verify` 和 `kv20_metrics.py` 仍按原 TP8 成对实验验收。
 
 ## 验收和时延统计
 
