@@ -59,6 +59,18 @@ python3 "$TOOLS/xllm_run.py" run "$BACKEND" "$RUN" --phase formal
 python3 "$TOOLS/xllm_run.py" run none "$RUN" --phase formal
 ```
 
+## 查看实际 token 复用率
+
+在 xLLM 日志容器执行。日志目录应包含一次启动记录和本轮 100 条正式请求的完成记录，warm 阶段单独存放。
+
+```bash
+python3 "$TOOLS/stat_xllm_cache_sources.py" /path/to/formal/log --requests 100
+```
+
+无后端时只需 `node_0.log`。输出的“本地实际复用 token”按所有请求的 `sum(num_prefix_cache_tokens) / sum(prompt_tokens)` 计算。“其中有前缀复用”给出至少命中一个块的请求数。
+
+启用后端时提供 TP8 的 `node_0.log` 至 `node_7.log`。脚本汇总后端 GET 的分片块命中率，以及单次批调用的 load_kvc、store_kvc 平均值、P50 和 P99。仅凭这些汇总日志，脚本给出的后端实际复用 token 数是上限。逐请求确认 80 块是否来自后端，请使用下面的 `verify` 命令。
+
 ## 验收和时延统计
 
 在日志容器执行，`LOG` 直接指向本轮 formal 的 `node_0.log` 所在目录。有后端时，需要 `node_0.log` 至 `node_7.log`，以及含请求 ID 的 `plan_ready`、`worker_get_end`、`completion_available` 打点和请求完成日志。缺少打点的运行无法用此脚本逐条确认后端命中。
